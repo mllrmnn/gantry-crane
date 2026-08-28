@@ -10,7 +10,7 @@ use crate::{
 use super::{
     button::Button,
     device::Device,
-    entity::{DeviceClass, Entity, StateClass},
+    entity::{normalize_object_id, normalize_unique_id_part, DeviceClass, Entity, StateClass},
     sensor::Sensor,
 };
 
@@ -18,6 +18,9 @@ pub struct HomeAssistantContainer {
     settings: Arc<Settings>,
     event_tx: EventSender,
     node_id: String,
+    container_name: String,
+    object_id_prefix: String,
+    unique_id_prefix: String,
     is_host_networking: bool,
     device: Arc<Device>,
     sensors: Vec<Sensor>,
@@ -31,13 +34,26 @@ impl HomeAssistantContainer {
         container: &ContainerEventInfo,
         node_id: String,
     ) -> Self {
+        let container_name = container.name.trim_start_matches('/').to_owned();
+        let unique_id_prefix = format!(
+            "{}_{}",
+            normalize_unique_id_part(&node_id),
+            normalize_unique_id_part(&container_name)
+        );
+        let object_id_prefix = normalize_object_id(&format!("{}_{}", node_id, container_name));
+        let device_name = format!("{} ({})", container_name, node_id);
+
         Self {
             settings,
             event_tx,
             node_id,
+            container_name,
+            object_id_prefix,
+            unique_id_prefix: unique_id_prefix.clone(),
             is_host_networking: container.is_host_networking,
-            device: Arc::new(Device::new(
-                container.name[1..].into(),
+            device: Arc::new(Device::new_with_identifier(
+                device_name,
+                format!("gc_{}", unique_id_prefix),
                 Some("Docker".into()),
             )),
             sensors: Vec::new(),
@@ -47,393 +63,271 @@ impl HomeAssistantContainer {
         .setup_buttons()
     }
 
+    fn state_topic(&self) -> String {
+        format!("{}/{}", self.settings.mqtt.base_topic, self.container_name)
+    }
+
+    fn set_topic(&self) -> String {
+        format!(
+            "{}/{}/{}",
+            self.settings.mqtt.base_topic, self.container_name, SET_STATE_TOPIC
+        )
+    }
+
+    fn availability_topic(&self) -> Option<String> {
+        Some(format!(
+            "{}/{}",
+            self.settings.mqtt.base_topic, AVAILABILITY_TOPIC
+        ))
+    }
+
+    fn object_id(&self, suffix: &str) -> String {
+        format!("{}_{}", self.object_id_prefix, suffix)
+    }
+
+    fn unique_id(&self, suffix: &str) -> String {
+        format!("gc_{}_{}", self.unique_id_prefix, suffix)
+    }
+
+    fn sensor(
+        &self,
+        name: &str,
+        suffix: &str,
+        icon: Option<&str>,
+        state_class: Option<StateClass>,
+        unit_of_measurement: Option<&str>,
+        value_template: &str,
+        enabled_by_default: bool,
+    ) -> Sensor {
+        Sensor {
+            availability_topic: self.availability_topic(),
+            device: self.device.clone(),
+            enabled_by_default: Some(enabled_by_default),
+            entity_category: None,
+            expire_after: None,
+            force_update: None,
+            icon: icon.map(Into::into),
+            name: name.into(),
+            default_entity_id: Some(self.object_id(suffix)),
+            object_id: Some(self.object_id(suffix)),
+            payload_available: None,
+            payload_not_available: None,
+            state_class,
+            state_topic: self.state_topic(),
+            unique_id: Some(self.unique_id(suffix)),
+            unit_of_measurement: unit_of_measurement.map(Into::into),
+            value_template: Some(value_template.into()),
+        }
+    }
+
+    fn button(
+        &self,
+        name: &str,
+        suffix: &str,
+        payload_press: &str,
+        icon: Option<&str>,
+        device_class: Option<DeviceClass>,
+        enabled_by_default: bool,
+    ) -> Button {
+        Button {
+            availability_topic: self.availability_topic(),
+            command_topic: self.set_topic(),
+            device: self.device.clone(),
+            device_class,
+            enabled_by_default: Some(enabled_by_default),
+            entity_category: None,
+            icon: icon.map(Into::into),
+            name: name.into(),
+            default_entity_id: Some(self.object_id(suffix)),
+            object_id: Some(self.object_id(suffix)),
+            payload_available: None,
+            payload_not_available: None,
+            payload_press: payload_press.into(),
+            retain: None,
+            unique_id: Some(self.unique_id(suffix)),
+        }
+    }
+
     fn setup_sensors(mut self) -> Self {
         // Image
-        self.sensors.push(Sensor {
-            name: "Image".into(),
-            state_topic: format!("{}/{}", self.settings.mqtt.base_topic, self.device.name),
-            availability_topic: Some(format!(
-                "{}/{}",
-                self.settings.mqtt.base_topic, AVAILABILITY_TOPIC
-            )),
-            device: self.device.clone(),
-            enabled_by_default: Some(true),
-            entity_category: None,
-            expire_after: None,
-            force_update: None,
-            icon: Some("mdi:docker".into()),
-            default_entity_id: Some(format!("{}_image", self.device.name)),
-            payload_available: None,
-            payload_not_available: None,
-            state_class: None,
-            unique_id: Some(format!("gc_{}_image", self.device.name)),
-            unit_of_measurement: None,
-            value_template: Some("{{ value_json['image'] }}".into()),
-        });
+        self.sensors.push(self.sensor(
+            "Image",
+            "image",
+            Some("mdi:docker"),
+            None,
+            None,
+            "{{ value_json['image'] }}",
+            true,
+        ));
 
         // State
-        self.sensors.push(Sensor {
-            name: "State".into(),
-            state_topic: format!("{}/{}", self.settings.mqtt.base_topic, self.device.name),
-            availability_topic: Some(format!(
-                "{}/{}",
-                self.settings.mqtt.base_topic, AVAILABILITY_TOPIC
-            )),
-            device: self.device.clone(),
-            enabled_by_default: Some(true),
-            entity_category: None,
-            expire_after: None,
-            force_update: None,
-            icon: Some("mdi:docker".into()),
-            default_entity_id: Some(format!("{}_state", self.device.name)),
-            payload_available: None,
-            payload_not_available: None,
-            state_class: None,
-            unique_id: Some(format!("gc_{}_state", self.device.name)),
-            unit_of_measurement: None,
-            value_template: Some("{{ value_json['state'] }}".into()),
-        });
+        self.sensors.push(self.sensor(
+            "State",
+            "state",
+            Some("mdi:docker"),
+            None,
+            None,
+            "{{ value_json['state'] }}",
+            true,
+        ));
 
         // Health
-        self.sensors.push(Sensor {
-            name: "Health".into(),
-            state_topic: format!("{}/{}", self.settings.mqtt.base_topic, self.device.name),
-            availability_topic: Some(format!(
-                "{}/{}",
-                self.settings.mqtt.base_topic, AVAILABILITY_TOPIC
-            )),
-            device: self.device.clone(),
-            enabled_by_default: Some(false),
-            entity_category: None,
-            expire_after: None,
-            force_update: None,
-            icon: Some("mdi:heart-pulse".into()),
-            default_entity_id: Some(format!("{}_health", self.device.name)),
-            payload_available: None,
-            payload_not_available: None,
-            state_class: None,
-            unique_id: Some(format!("gc_{}_health", self.device.name)),
-            unit_of_measurement: None,
-            value_template: Some("{{ value_json['health'] }}".into()),
-        });
+        self.sensors.push(self.sensor(
+            "Health",
+            "health",
+            Some("mdi:heart-pulse"),
+            None,
+            None,
+            "{{ value_json['health'] }}",
+            true,
+        ));
 
         // CPU
-        self.sensors.push(Sensor {
-            name: "CPU Percentage".into(),
-            state_topic: format!("{}/{}", self.settings.mqtt.base_topic, self.device.name),
-            availability_topic: Some(format!(
-                "{}/{}",
-                self.settings.mqtt.base_topic, AVAILABILITY_TOPIC
-            )),
-            device: self.device.clone(),
-            enabled_by_default: Some(true),
-            entity_category: None,
-            expire_after: None,
-            force_update: None,
-            icon: Some("mdi:cpu-64-bit".into()),
-            default_entity_id: Some(format!("{}_cpu", self.device.name)),
-            payload_available: None,
-            payload_not_available: None,
-            state_class: Some(StateClass::Measurement),
-            unique_id: Some(format!("gc_{}_cpu", self.device.name)),
-            unit_of_measurement: Some("%".into()),
-            value_template: Some("{{ value_json['cpu_percentage'] }}".into()),
-        });
+        self.sensors.push(self.sensor(
+            "CPU Percentage",
+            "cpu",
+            Some("mdi:cpu-64-bit"),
+            Some(StateClass::Measurement),
+            Some("%"),
+            "{{ value_json['cpu_percentage'] }}",
+            true,
+        ));
+
+        // 1CPU
+        self.sensors.push(self.sensor(
+            "1CPU",
+            "cpu_1core",
+            Some("mdi:cpu-64-bit"),
+            Some(StateClass::Measurement),
+            Some("%"),
+            "{{ value_json['cpu_1core_percentage'] }}",
+            true,
+        ));
 
         // Memory percentage
-        self.sensors.push(Sensor {
-            name: "Memory Percentage".into(),
-            state_topic: format!("{}/{}", self.settings.mqtt.base_topic, self.device.name),
-            availability_topic: Some(format!(
-                "{}/{}",
-                self.settings.mqtt.base_topic, AVAILABILITY_TOPIC
-            )),
-            device: self.device.clone(),
-            enabled_by_default: Some(true),
-            entity_category: None,
-            expire_after: None,
-            force_update: None,
-            icon: Some("mdi:memory".into()),
-            default_entity_id: Some(format!("{}_mem", self.device.name)),
-            payload_available: None,
-            payload_not_available: None,
-            state_class: Some(StateClass::Measurement),
-            unique_id: Some(format!("gc_{}_mem", self.device.name)),
-            unit_of_measurement: Some("%".into()),
-            value_template: Some("{{ value_json['mem_percentage'] }}".into()),
-        });
+        self.sensors.push(self.sensor(
+            "Memory Percentage",
+            "mem",
+            Some("mdi:memory"),
+            Some(StateClass::Measurement),
+            Some("%"),
+            "{{ value_json['mem_percentage'] }}",
+            true,
+        ));
 
         // Memory absolute
-        self.sensors.push(Sensor {
-            name: "Memory Usage".into(),
-            state_topic: format!("{}/{}", self.settings.mqtt.base_topic, self.device.name),
-            availability_topic: Some(format!(
-                "{}/{}",
-                self.settings.mqtt.base_topic, AVAILABILITY_TOPIC
-            )),
-            device: self.device.clone(),
-            enabled_by_default: Some(false),
-            entity_category: None,
-            expire_after: None,
-            force_update: None,
-            icon: Some("mdi:memory".into()),
-            default_entity_id: Some(format!("{}_mem_mb", self.device.name)),
-            payload_available: None,
-            payload_not_available: None,
-            state_class: Some(StateClass::Measurement),
-            unique_id: Some(format!("gc_{}_mem_mb", self.device.name)),
-            unit_of_measurement: Some("MB".into()),
-            value_template: Some("{{ value_json['mem_mb'] }}".into()),
-        });
+        self.sensors.push(self.sensor(
+            "Memory Usage",
+            "mem_mb",
+            Some("mdi:memory"),
+            Some(StateClass::Measurement),
+            Some("MB"),
+            "{{ value_json['mem_mb'] }}",
+            true,
+        ));
 
         // Network stats are not available in case of host network mode
         if !self.is_host_networking {
             // Net RX
-            self.sensors.push(Sensor {
-                name: "Net RX".into(),
-                state_topic: format!("{}/{}", self.settings.mqtt.base_topic, self.device.name),
-                availability_topic: Some(format!(
-                    "{}/{}",
-                    self.settings.mqtt.base_topic, AVAILABILITY_TOPIC
-                )),
-                device: self.device.clone(),
-                enabled_by_default: Some(false),
-                entity_category: None,
-                expire_after: None,
-                force_update: None,
-                icon: Some("mdi:download-network-outline".into()),
-                default_entity_id: Some(format!("{}_net_rx", self.device.name)),
-                payload_available: None,
-                payload_not_available: None,
-                state_class: Some(StateClass::Measurement),
-                unique_id: Some(format!("gc_{}_net_rx", self.device.name)),
-                unit_of_measurement: Some("MB".into()),
-                value_template: Some("{{ value_json['net_rx_mb'] }}".into()),
-            });
+            self.sensors.push(self.sensor(
+                "Net RX",
+                "net_rx",
+                Some("mdi:download-network-outline"),
+                Some(StateClass::Measurement),
+                Some("MB"),
+                "{{ value_json['net_rx_mb'] }}",
+                false,
+            ));
 
             // Net TX
-            self.sensors.push(Sensor {
-                name: "Net TX".into(),
-                state_topic: format!("{}/{}", self.settings.mqtt.base_topic, self.device.name),
-                availability_topic: Some(format!(
-                    "{}/{}",
-                    self.settings.mqtt.base_topic, AVAILABILITY_TOPIC
-                )),
-                device: self.device.clone(),
-                enabled_by_default: Some(false),
-                entity_category: None,
-                expire_after: None,
-                force_update: None,
-                icon: Some("mdi:upload-network-outline".into()),
-                default_entity_id: Some(format!("{}_net_tx", self.device.name)),
-                payload_available: None,
-                payload_not_available: None,
-                state_class: Some(StateClass::Measurement),
-                unique_id: Some(format!("gc_{}_net_tx", self.device.name)),
-                unit_of_measurement: Some("MB".into()),
-                value_template: Some("{{ value_json['net_tx_mb'] }}".into()),
-            });
+            self.sensors.push(self.sensor(
+                "Net TX",
+                "net_tx",
+                Some("mdi:upload-network-outline"),
+                Some(StateClass::Measurement),
+                Some("MB"),
+                "{{ value_json['net_tx_mb'] }}",
+                false,
+            ));
         }
 
         // Block RX
-        self.sensors.push(Sensor {
-            name: "Block RX".into(),
-            state_topic: format!("{}/{}", self.settings.mqtt.base_topic, self.device.name),
-            availability_topic: Some(format!(
-                "{}/{}",
-                self.settings.mqtt.base_topic, AVAILABILITY_TOPIC
-            )),
-            device: self.device.clone(),
-            enabled_by_default: Some(false),
-            entity_category: None,
-            expire_after: None,
-            force_update: None,
-            icon: Some("mdi:file-download-outline".into()),
-            default_entity_id: Some(format!("{}_block_rx", self.device.name)),
-            payload_available: None,
-            payload_not_available: None,
-            state_class: Some(StateClass::Measurement),
-            unique_id: Some(format!("gc_{}_block_rx", self.device.name)),
-            unit_of_measurement: Some("MB".into()),
-            value_template: Some("{{ value_json['block_rx_mb'] }}".into()),
-        });
+        self.sensors.push(self.sensor(
+            "Block RX",
+            "block_rx",
+            Some("mdi:file-download-outline"),
+            Some(StateClass::Measurement),
+            Some("MB"),
+            "{{ value_json['block_rx_mb'] }}",
+            false,
+        ));
 
         // Block TX
-        self.sensors.push(Sensor {
-            name: "Block TX".into(),
-            state_topic: format!("{}/{}", self.settings.mqtt.base_topic, self.device.name),
-            availability_topic: Some(format!(
-                "{}/{}",
-                self.settings.mqtt.base_topic, AVAILABILITY_TOPIC
-            )),
-            device: self.device.clone(),
-            enabled_by_default: Some(false),
-            entity_category: None,
-            expire_after: None,
-            force_update: None,
-            icon: Some("mdi:file-upload-outline".into()),
-            default_entity_id: Some(format!("{}_block_tx", self.device.name)),
-            payload_available: None,
-            payload_not_available: None,
-            state_class: Some(StateClass::Measurement),
-            unique_id: Some(format!("gc_{}_block_tx", self.device.name)),
-            unit_of_measurement: Some("MB".into()),
-            value_template: Some("{{ value_json['block_tx_mb'] }}".into()),
-        });
+        self.sensors.push(self.sensor(
+            "Block TX",
+            "block_tx",
+            Some("mdi:file-upload-outline"),
+            Some(StateClass::Measurement),
+            Some("MB"),
+            "{{ value_json['block_tx_mb'] }}",
+            false,
+        ));
 
         self
     }
 
     fn setup_buttons(mut self) -> Self {
         // Start
-        self.buttons.push(Button {
-            name: "Start".into(),
-            availability_topic: Some(format!(
-                "{}/{}",
-                self.settings.mqtt.base_topic, AVAILABILITY_TOPIC
-            )),
-            command_topic: format!(
-                "{}/{}/{}",
-                self.settings.mqtt.base_topic, self.device.name, SET_STATE_TOPIC
-            ),
-            device: self.device.clone(),
-            device_class: None,
-            enabled_by_default: Some(true),
-            entity_category: None,
-            icon: Some("mdi:play".into()),
-            default_entity_id: Some(format!("{}_start", self.device.name)),
-            payload_available: None,
-            payload_not_available: None,
-            payload_press: "start".into(),
-            retain: None,
-            unique_id: Some(format!("gc_{}_start", self.device.name)),
-        });
+        self.buttons
+            .push(self.button("Start", "start", "start", Some("mdi:play"), None, true));
 
         // Stop
-        self.buttons.push(Button {
-            name: "Stop".into(),
-            availability_topic: Some(format!(
-                "{}/{}",
-                self.settings.mqtt.base_topic, AVAILABILITY_TOPIC
-            )),
-            command_topic: format!("{}/{}/set", self.settings.mqtt.base_topic, self.device.name),
-            device: self.device.clone(),
-            device_class: None,
-            enabled_by_default: Some(true),
-            entity_category: None,
-            icon: Some("mdi:stop".into()),
-            default_entity_id: Some(format!("{}_stop", self.device.name)),
-            payload_available: None,
-            payload_not_available: None,
-            payload_press: "stop".into(),
-            retain: None,
-            unique_id: Some(format!("gc_{}_stop", self.device.name)),
-        });
+        self.buttons
+            .push(self.button("Stop", "stop", "stop", Some("mdi:stop"), None, true));
 
         // Restart
-        self.buttons.push(Button {
-            name: "Restart".into(),
-            availability_topic: Some(format!(
-                "{}/{}",
-                self.settings.mqtt.base_topic, AVAILABILITY_TOPIC
-            )),
-            command_topic: format!("{}/{}/set", self.settings.mqtt.base_topic, self.device.name),
-            device: self.device.clone(),
-            device_class: Some(DeviceClass::Restart),
-            enabled_by_default: Some(true),
-            entity_category: None,
-            icon: None,
-            default_entity_id: Some(format!("{}_restart", self.device.name)),
-            payload_available: None,
-            payload_not_available: None,
-            payload_press: "restart".into(),
-            retain: None,
-            unique_id: Some(format!("gc_{}_restart", self.device.name)),
-        });
+        self.buttons.push(self.button(
+            "Restart",
+            "restart",
+            "restart",
+            None,
+            Some(DeviceClass::Restart),
+            true,
+        ));
 
         // Pause
-        self.buttons.push(Button {
-            name: "Pause".into(),
-            availability_topic: Some(format!(
-                "{}/{}",
-                self.settings.mqtt.base_topic, AVAILABILITY_TOPIC
-            )),
-            command_topic: format!("{}/{}/set", self.settings.mqtt.base_topic, self.device.name),
-            device: self.device.clone(),
-            device_class: None,
-            enabled_by_default: Some(false),
-            entity_category: None,
-            icon: Some("mdi:pause".into()),
-            default_entity_id: Some(format!("{}_pause", self.device.name)),
-            payload_available: None,
-            payload_not_available: None,
-            payload_press: "pause".into(),
-            retain: None,
-            unique_id: Some(format!("gc_{}_pause", self.device.name)),
-        });
+        self.buttons
+            .push(self.button("Pause", "pause", "pause", Some("mdi:pause"), None, false));
 
         // Unpause
-        self.buttons.push(Button {
-            name: "Unpause".into(),
-            availability_topic: Some(format!(
-                "{}/{}",
-                self.settings.mqtt.base_topic, AVAILABILITY_TOPIC
-            )),
-            command_topic: format!("{}/{}/set", self.settings.mqtt.base_topic, self.device.name),
-            device: self.device.clone(),
-            device_class: None,
-            enabled_by_default: Some(false),
-            entity_category: None,
-            icon: Some("mdi:play-pause".into()),
-            default_entity_id: Some(format!("{}_unpause", self.device.name)),
-            payload_available: None,
-            payload_not_available: None,
-            payload_press: "unpause".into(),
-            retain: None,
-            unique_id: Some(format!("gc_{}_unpause", self.device.name)),
-        });
+        self.buttons.push(self.button(
+            "Unpause",
+            "unpause",
+            "unpause",
+            Some("mdi:play-pause"),
+            None,
+            false,
+        ));
 
         // Recreate
-        self.buttons.push(Button {
-            name: "Recreate".into(),
-            availability_topic: Some(format!(
-                "{}/{}",
-                self.settings.mqtt.base_topic, AVAILABILITY_TOPIC
-            )),
-            command_topic: format!("{}/{}/set", self.settings.mqtt.base_topic, self.device.name),
-            device: self.device.clone(),
-            device_class: None,
-            enabled_by_default: Some(false),
-            entity_category: None,
-            icon: Some("mdi:autorenew".into()),
-            default_entity_id: Some(format!("{}_recreate", self.device.name)),
-            payload_available: None,
-            payload_not_available: None,
-            payload_press: "recreate".into(),
-            retain: None,
-            unique_id: Some(format!("gc_{}_recreate", self.device.name)),
-        });
+        self.buttons.push(self.button(
+            "Recreate",
+            "recreate",
+            "recreate",
+            Some("mdi:autorenew"),
+            None,
+            false,
+        ));
 
         // Pull and recreate
-        self.buttons.push(Button {
-            name: "Pull and Recreate".into(),
-            availability_topic: Some(format!(
-                "{}/{}",
-                self.settings.mqtt.base_topic, AVAILABILITY_TOPIC
-            )),
-            command_topic: format!("{}/{}/set", self.settings.mqtt.base_topic, self.device.name),
-            device: self.device.clone(),
-            device_class: None,
-            enabled_by_default: Some(false),
-            entity_category: None,
-            icon: Some("mdi:update".into()),
-            default_entity_id: Some(format!("{}_pull_recreate", self.device.name)),
-            payload_available: None,
-            payload_not_available: None,
-            payload_press: "pull_recreate".into(),
-            retain: None,
-            unique_id: Some(format!("gc_{}_pull_recreate", self.device.name)),
-        });
+        self.buttons.push(self.button(
+            "Pull and Recreate",
+            "pull_recreate",
+            "pull_recreate",
+            Some("mdi:update"),
+            None,
+            false,
+        ));
 
         self
     }
@@ -515,9 +409,110 @@ mod test {
             "node_id".into(),
         );
 
-        assert_eq!(container.device.name, "Container Name");
-        assert_eq!(container.sensors.len(), 10);
+        assert_eq!(container.device.name, "Container Name (node_id)");
+        assert_eq!(
+            container.device.identifiers,
+            vec!["gc_node_id_container_name".to_owned()]
+        );
+        assert_eq!(container.sensors.len(), 11);
         assert_eq!(container.buttons.len(), 7);
+    }
+
+    #[test]
+    fn test_multi_host_ids_for_same_container_name() {
+        let host_a = get_container("docker01-rrnuc", "/dockerproxy", false);
+        let host_b = get_container("docker01-muestation", "/dockerproxy", false);
+
+        assert_ne!(host_a.device.identifiers, host_b.device.identifiers);
+        assert_eq!(
+            host_a.device.identifiers,
+            vec!["gc_docker01-rrnuc_dockerproxy".to_owned()]
+        );
+        assert_eq!(
+            host_b.device.identifiers,
+            vec!["gc_docker01-muestation_dockerproxy".to_owned()]
+        );
+        assert_eq!(host_a.device.name, "dockerproxy (docker01-rrnuc)");
+        assert_eq!(host_b.device.name, "dockerproxy (docker01-muestation)");
+
+        for (a, b) in host_a.sensors.iter().zip(host_b.sensors.iter()) {
+            assert_ne!(a.unique_id, b.unique_id);
+            assert_ne!(a.object_id, b.object_id);
+            assert_eq!(a.state_topic, "gantry-crane/dockerproxy");
+        }
+
+        for (a, b) in host_a.buttons.iter().zip(host_b.buttons.iter()) {
+            assert_ne!(a.unique_id, b.unique_id);
+            assert_ne!(a.object_id, b.object_id);
+            assert_eq!(a.command_topic, "gantry-crane/dockerproxy/set");
+        }
+    }
+
+    #[test]
+    fn test_multi_host_ids_for_different_containers_on_same_host() {
+        let dockerproxy = get_container("docker01-rrnuc", "/dockerproxy", false);
+        let portainer = get_container("docker01-rrnuc", "/portainer", false);
+
+        assert_ne!(dockerproxy.device.identifiers, portainer.device.identifiers);
+        assert_ne!(
+            dockerproxy.sensors[0].unique_id,
+            portainer.sensors[0].unique_id
+        );
+    }
+
+    #[test]
+    fn test_representative_entity_ids_and_defaults() {
+        let container = get_container("docker01-rrnuc", "/dockerproxy", false);
+
+        assert_sensor(
+            &container,
+            "Image",
+            "gc_docker01-rrnuc_dockerproxy_image",
+            "docker01_rrnuc_dockerproxy_image",
+            true,
+        );
+        assert_sensor(
+            &container,
+            "Health",
+            "gc_docker01-rrnuc_dockerproxy_health",
+            "docker01_rrnuc_dockerproxy_health",
+            true,
+        );
+        assert_sensor(
+            &container,
+            "CPU Percentage",
+            "gc_docker01-rrnuc_dockerproxy_cpu",
+            "docker01_rrnuc_dockerproxy_cpu",
+            true,
+        );
+        assert_sensor(
+            &container,
+            "1CPU",
+            "gc_docker01-rrnuc_dockerproxy_cpu_1core",
+            "docker01_rrnuc_dockerproxy_cpu_1core",
+            true,
+        );
+        assert_sensor(
+            &container,
+            "Memory Usage",
+            "gc_docker01-rrnuc_dockerproxy_mem_mb",
+            "docker01_rrnuc_dockerproxy_mem_mb",
+            true,
+        );
+        assert_sensor(
+            &container,
+            "Net RX",
+            "gc_docker01-rrnuc_dockerproxy_net_rx",
+            "docker01_rrnuc_dockerproxy_net_rx",
+            false,
+        );
+        assert_button(
+            &container,
+            "Restart",
+            "gc_docker01-rrnuc_dockerproxy_restart",
+            "docker01_rrnuc_dockerproxy_restart",
+            true,
+        );
     }
 
     #[test]
@@ -537,7 +532,7 @@ mod test {
         let recv = event_channel.get_receiver();
         assert_eq!(recv.len(), 0);
         container.publish();
-        assert_eq!(recv.len(), 17);
+        assert_eq!(recv.len(), 18);
     }
 
     #[tokio::test]
@@ -584,7 +579,7 @@ mod test {
         let recv = event_channel.get_receiver();
         assert_eq!(recv.len(), 0);
         container.unpublish();
-        assert_eq!(recv.len(), 17);
+        assert_eq!(recv.len(), 18);
     }
 
     #[tokio::test]
@@ -612,5 +607,51 @@ mod test {
         if let Event::PublishMqttMessage(msg) = event {
             assert_eq!(msg.payload.len(), 0);
         }
+    }
+
+    fn get_container(
+        node_id: &str,
+        container_name: &str,
+        is_host_networking: bool,
+    ) -> HomeAssistantContainer {
+        let settings = temp_env::with_var_unset("DUMMY", || Settings::new(None).unwrap());
+        let event_channel = EventChannel::new();
+        HomeAssistantContainer::new(
+            Arc::new(settings),
+            event_channel.get_sender(),
+            &ContainerEventInfo {
+                name: container_name.into(),
+                is_host_networking,
+            },
+            node_id.into(),
+        )
+    }
+
+    fn assert_sensor(
+        container: &HomeAssistantContainer,
+        name: &str,
+        unique_id: &str,
+        object_id: &str,
+        enabled_by_default: bool,
+    ) {
+        let sensor = container.sensors.iter().find(|s| s.name == name).unwrap();
+        assert_eq!(sensor.unique_id.as_deref(), Some(unique_id));
+        assert_eq!(sensor.object_id.as_deref(), Some(object_id));
+        assert_eq!(sensor.default_entity_id.as_deref(), Some(object_id));
+        assert_eq!(sensor.enabled_by_default, Some(enabled_by_default));
+    }
+
+    fn assert_button(
+        container: &HomeAssistantContainer,
+        name: &str,
+        unique_id: &str,
+        object_id: &str,
+        enabled_by_default: bool,
+    ) {
+        let button = container.buttons.iter().find(|b| b.name == name).unwrap();
+        assert_eq!(button.unique_id.as_deref(), Some(unique_id));
+        assert_eq!(button.object_id.as_deref(), Some(object_id));
+        assert_eq!(button.default_entity_id.as_deref(), Some(object_id));
+        assert_eq!(button.enabled_by_default, Some(enabled_by_default));
     }
 }

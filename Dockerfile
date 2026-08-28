@@ -29,7 +29,7 @@ RUN echo "Configuring environment for ${TARGETPLATFORM:=linux/amd64}" && \
 # hadolint ignore=DL3008
 RUN dpkg --add-architecture arm64 &&\
     dpkg --add-architecture armhf && \
-    apt-get update && \ 
+    apt-get update && \
     apt-get install -y --no-install-recommends \
     pkg-config libssl-dev cmake g++ \
     libssl-dev:arm64 gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \

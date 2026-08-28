@@ -26,6 +26,8 @@ pub struct Sensor {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_entity_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub object_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub payload_available: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub payload_not_available: Option<String>,
@@ -42,7 +44,14 @@ pub struct Sensor {
 
 impl Sensor {
     fn get_device_topic(&self) -> String {
-        self.device.name.to_lowercase().replace(' ', "_")
+        self.device
+            .identifiers
+            .first()
+            .and_then(|id| id.strip_prefix("gc_"))
+            .map_or_else(
+                || super::entity::normalize_object_id(&self.device.name),
+                super::entity::normalize_object_id,
+            )
     }
 }
 
@@ -53,7 +62,7 @@ impl Entity for Sensor {
             base_topic,
             node_id,
             self.get_device_topic(),
-            self.name.to_lowercase().replace(' ', "_")
+            super::entity::normalize_object_id(&self.name)
         )
     }
 }
@@ -80,6 +89,7 @@ mod test {
             force_update: None,
             icon: None,
             default_entity_id: None,
+            object_id: None,
             payload_available: None,
             payload_not_available: None,
             state_class: None,
@@ -105,6 +115,7 @@ mod test {
             force_update: None,
             icon: None,
             default_entity_id: None,
+            object_id: None,
             payload_available: None,
             payload_not_available: None,
             state_class: None,

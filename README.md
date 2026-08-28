@@ -38,11 +38,7 @@ Note that it's required to mount the docker socket into the container.
 
 ### Using docker
 
-`docker run -d --name gantry-crane --restart=always -v /var/run/docker.sock:/var/run/docker.sock -e MQTT_HOST=localhost philw07/gantry-crane:latest`
-
-or
-
-`docker run -d --name gantry-crane --restart=always -v /var/run/docker.sock:/var/run/docker.sock -e MQTT_HOST=localhost ghcr.io/philw07/gantry-crane:latest`
+`docker run -d --name gantry-crane --restart=always -v /var/run/docker.sock:/var/run/docker.sock -e MQTT_HOST=localhost ghcr.io/<github-user>/gantry-crane:latest`
 
 ### Using docker-compose
 
@@ -51,7 +47,7 @@ version: "3.5"
 
 services:
   gantry-crane:
-    image: philw07/gantry-crane:latest # or ghcr.io/philw07/gantry-crane:latest
+    image: ghcr.io/<github-user>/gantry-crane:latest
     container_name: gantry-crane
     restart: always
     volumes:
@@ -102,10 +98,11 @@ If the base topic is `gantry-crane` and a container is named `my_container`, the
 ```
 {
   "name": "my_container",
-  "image": "philw07/gantry-crane:latest",
+  "image": "ghcr.io/<github-user>/gantry-crane:latest",
   "state": "running",
   "health": "unknown",
   "cpu_percentage": 0.9,
+  "cpu_1core_percentage": 0.9,
   "mem_percentage": 0.08,
   "mem_mb": 12.51,
   "net_rx_mb": 9.92,
@@ -138,6 +135,14 @@ The following actions are available.
 When enabling the Home Assistant integration, by setting `HOMEASSISTANT_ACTIVE` to true, gantry-crane will publish MQTT discovery topics which Home Assistant will pick up automatically and add each container as a device with several entities (sensors and buttons).
 Some entities are disabled by default and can be enabled via the Home Assistant UI.
 
+`HOMEASSISTANT_NODE_ID` is part of every Home Assistant device identifier, unique ID, and object ID.
+This keeps containers with the same name on different Docker hosts separate in Home Assistant.
+For example, `/dockerproxy` on `docker01-rrnuc` is discovered as device `dockerproxy (docker01-rrnuc)` with identifiers such as `gc_docker01-rrnuc_dockerproxy` and entity unique IDs such as `gc_docker01-rrnuc_dockerproxy_cpu`.
+
+The `CPU Percentage` sensor keeps the existing Docker-compatible CPU calculation.
+The additional `1CPU` sensor exposes the same core-based Docker CPU percentage explicitly: `100 %` means one fully used CPU core, `200 %` means two fully used CPU cores.
+Both `Health` and `Memory Usage` are enabled by default for newly discovered containers.
+
 The sensors and buttons can be used in automations or scenes, e.g. to start/stop containers at a specific time.
 
 ![Home Assistant integration example](https://raw.githubusercontent.com/philw07/gantry-crane/master/docs/images/homeassistant_integration_example.png)
@@ -150,9 +155,13 @@ That means your container data will still be available on the MQTT broker and in
 To clean up all traces, you can run gantry-crane with the `--clean` flag and it will delete all retained messages.
 Make sure to run it with the same configuration, otherwise it might not delete everything.
 
+When upgrading an existing Home Assistant installation to the multi-host identifiers, old retained MQTT discovery messages may still exist under the previous IDs, e.g. `gc_<container>_image`.
+Run cleanup once with the old configuration before switching to the new image and `HOMEASSISTANT_NODE_ID`, or remove the old retained discovery topics manually from your MQTT broker.
+gantry-crane does not delete unrelated Home Assistant discovery topics automatically.
+
 ### Using docker
 
-`docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -e MQTT_HOST=localhost philw07/gantry-crane:latest --clean`
+`docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -e MQTT_HOST=localhost ghcr.io/<github-user>/gantry-crane:latest --clean`
 
 Make sure to omit `--restart=always`.
 
@@ -163,7 +172,7 @@ version: "3.5"
 
 services:
   gantry-crane:
-    image: philw07/gantry-crane:latest
+    image: ghcr.io/<github-user>/gantry-crane:latest
     container_name: gantry-crane
     # restart: always # Make sure to comment out or remove
     volumes:

@@ -33,6 +33,7 @@ pub struct Container {
     health: String,
 
     cpu_percentage: f64,
+    cpu_1core_percentage: f64,
     mem_percentage: f64,
     mem_mb: f64,
     net_rx_mb: f64,
@@ -70,6 +71,7 @@ impl Container {
             health: UNKNOWN.into(),
 
             cpu_percentage: 0.0,
+            cpu_1core_percentage: 0.0,
             mem_percentage: 0.0,
             mem_mb: 0.0,
             net_rx_mb: 0.0,
@@ -157,26 +159,36 @@ impl Container {
     }
 
     fn parse_cpu(&mut self, stats: &Stats) {
-        let mut cpu = 0.0;
-        if let Some(sys_usage) = stats.cpu_stats.system_cpu_usage {
-            let mut num_cpus = stats.cpu_stats.online_cpus.map_or(0, |num| num);
-            if num_cpus == 0 {
-                if let Some(percpu_usage) = stats.cpu_stats.cpu_usage.percpu_usage.as_ref() {
-                    num_cpus = percpu_usage.len() as u64;
-                }
-            }
+        let cpu = Self::calculate_cpu_1core_percentage(stats);
+        self.cpu_percentage = round(cpu, PRECISION);
+        self.cpu_1core_percentage = round(cpu, PRECISION);
+    }
 
-            let cpu_delta = stats.cpu_stats.cpu_usage.total_usage as f64
-                - stats.precpu_stats.cpu_usage.total_usage as f64;
-            let system_delta =
-                sys_usage as f64 - stats.precpu_stats.system_cpu_usage.unwrap_or(0) as f64;
+    fn calculate_cpu_1core_percentage(stats: &Stats) -> f64 {
+        let Some(sys_usage) = stats.cpu_stats.system_cpu_usage else {
+            return 0.0;
+        };
+        let Some(prev_sys_usage) = stats.precpu_stats.system_cpu_usage else {
+            return 0.0;
+        };
 
-            if cpu_delta > 0.0 && system_delta > 0.0 {
-                cpu = (cpu_delta / system_delta) * 100.0 * num_cpus as f64;
+        let mut num_cpus = stats.cpu_stats.online_cpus.unwrap_or(0);
+        if num_cpus == 0 {
+            if let Some(percpu_usage) = stats.cpu_stats.cpu_usage.percpu_usage.as_ref() {
+                num_cpus = percpu_usage.len() as u64;
             }
         }
 
-        self.cpu_percentage = round(cpu, PRECISION);
+        let cpu_delta = stats.cpu_stats.cpu_usage.total_usage as f64
+            - stats.precpu_stats.cpu_usage.total_usage as f64;
+        let system_delta = sys_usage as f64 - prev_sys_usage as f64;
+
+        if cpu_delta <= 0.0 || system_delta <= 0.0 || num_cpus == 0 {
+            return 0.0;
+        }
+
+        let cpu = (cpu_delta / system_delta) * 100.0 * num_cpus as f64;
+        if cpu.is_finite() { cpu } else { 0.0 }
     }
 
     fn parse_mem(&mut self, stats: &Stats) {
@@ -443,6 +455,7 @@ mod tests {
         assert_eq!(container.state, status.as_ref());
         assert_eq!(container.health, health.as_ref());
         assert_eq!(container.cpu_percentage, 20.0);
+        assert_eq!(container.cpu_1core_percentage, 20.0);
         assert_eq!(container.mem_mb, 100.0);
         assert_eq!(container.mem_percentage, 10.0);
         assert_eq!(container.net_rx_mb, 5.0);
@@ -585,38 +598,126 @@ mod tests {
         stats.precpu_stats.system_cpu_usage = Some(100);
         container.parse_cpu(&stats);
         assert_eq!(container.cpu_percentage, 0.0);
+        assert_eq!(container.cpu_1core_percentage, 0.0);
 
         stats.cpu_stats.cpu_usage.percpu_usage = Some(vec![0; 2]);
         container.parse_cpu(&stats);
         assert_eq!(container.cpu_percentage, 20.0);
+        assert_eq!(container.cpu_1core_percentage, 20.0);
 
         stats.cpu_stats.cpu_usage.percpu_usage = Some(vec![0; 3]);
         container.parse_cpu(&stats);
         assert_eq!(container.cpu_percentage, 30.0);
+        assert_eq!(container.cpu_1core_percentage, 30.0);
 
         stats.cpu_stats.online_cpus = Some(0);
         container.parse_cpu(&stats);
         assert_eq!(container.cpu_percentage, 30.0);
+        assert_eq!(container.cpu_1core_percentage, 30.0);
 
         stats.cpu_stats.online_cpus = Some(4);
         container.parse_cpu(&stats);
         assert_eq!(container.cpu_percentage, 40.0);
+        assert_eq!(container.cpu_1core_percentage, 40.0);
 
         stats.cpu_stats.cpu_usage.percpu_usage = None;
         container.parse_cpu(&stats);
         assert_eq!(container.cpu_percentage, 40.0);
+        assert_eq!(container.cpu_1core_percentage, 40.0);
 
         stats.cpu_stats.cpu_usage.total_usage = 11;
         container.parse_cpu(&stats);
         assert_eq!(container.cpu_percentage, 4.0);
+        assert_eq!(container.cpu_1core_percentage, 4.0);
 
         stats.cpu_stats.system_cpu_usage = Some(150);
         container.parse_cpu(&stats);
         assert_eq!(container.cpu_percentage, 8.0);
+        assert_eq!(container.cpu_1core_percentage, 8.0);
 
         stats.cpu_stats.system_cpu_usage = None;
         container.parse_cpu(&stats);
         assert_eq!(container.cpu_percentage, 0.0);
+        assert_eq!(container.cpu_1core_percentage, 0.0);
+    }
+
+    #[test]
+    fn test_parse_cpu_1core_examples() {
+        let settings = Arc::new(Settings::default());
+        let event_channel = EventChannel::new();
+        let mut stats = get_stats("");
+        let inspect = ContainerInspectResponse {
+            ..Default::default()
+        };
+        let mut container = Container::new(
+            settings,
+            &event_channel,
+            &stats.clone(),
+            &inspect.clone(),
+            None,
+        );
+
+        stats.cpu_stats.online_cpus = Some(4);
+        stats.cpu_stats.system_cpu_usage = Some(400);
+        stats.precpu_stats.system_cpu_usage = Some(0);
+
+        stats.cpu_stats.cpu_usage.total_usage = 0;
+        stats.precpu_stats.cpu_usage.total_usage = 0;
+        container.parse_cpu(&stats);
+        assert_eq!(container.cpu_1core_percentage, 0.0);
+
+        stats.cpu_stats.cpu_usage.total_usage = 50;
+        container.parse_cpu(&stats);
+        assert_eq!(container.cpu_1core_percentage, 50.0);
+
+        stats.cpu_stats.cpu_usage.total_usage = 100;
+        container.parse_cpu(&stats);
+        assert_eq!(container.cpu_1core_percentage, 100.0);
+
+        stats.cpu_stats.cpu_usage.total_usage = 200;
+        container.parse_cpu(&stats);
+        assert_eq!(container.cpu_1core_percentage, 200.0);
+    }
+
+    #[test]
+    fn test_parse_cpu_edge_cases() {
+        let settings = Arc::new(Settings::default());
+        let event_channel = EventChannel::new();
+        let mut stats = get_stats("");
+        let inspect = ContainerInspectResponse {
+            ..Default::default()
+        };
+        let mut container = Container::new(
+            settings,
+            &event_channel,
+            &stats.clone(),
+            &inspect.clone(),
+            None,
+        );
+
+        stats.cpu_stats.online_cpus = Some(4);
+        stats.cpu_stats.cpu_usage.total_usage = 100;
+        stats.precpu_stats.cpu_usage.total_usage = 0;
+        stats.cpu_stats.system_cpu_usage = Some(100);
+        stats.precpu_stats.system_cpu_usage = None;
+        container.parse_cpu(&stats);
+        assert_eq!(container.cpu_1core_percentage, 0.0);
+
+        stats.precpu_stats.system_cpu_usage = Some(100);
+        container.parse_cpu(&stats);
+        assert_eq!(container.cpu_1core_percentage, 0.0);
+
+        stats.cpu_stats.system_cpu_usage = Some(200);
+        stats.precpu_stats.cpu_usage.total_usage = 100;
+        container.parse_cpu(&stats);
+        assert_eq!(container.cpu_1core_percentage, 0.0);
+
+        stats.cpu_stats.online_cpus = Some(0);
+        stats.cpu_stats.cpu_usage.percpu_usage = None;
+        stats.cpu_stats.cpu_usage.total_usage = 200;
+        stats.precpu_stats.cpu_usage.total_usage = 100;
+        container.parse_cpu(&stats);
+        assert_eq!(container.cpu_1core_percentage, 0.0);
     }
 
     #[test]
