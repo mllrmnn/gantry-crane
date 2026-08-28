@@ -637,10 +637,13 @@ mod test {
         let sensor = container.sensors.iter().find(|s| s.name == name).unwrap();
         assert_eq!(sensor.unique_id.as_deref(), Some(unique_id));
         assert_eq!(sensor.object_id.as_deref(), Some(object_id));
+
+        let expected_entity_id = format!("sensor.{}", object_id);
         assert_eq!(
-        sensor.default_entity_id.as_deref(),
-        Some(format!("sensor.{}", object_id).as_str())
-    );
+            sensor.default_entity_id.as_deref(),
+            Some(expected_entity_id.as_str())
+        );
+
         assert_eq!(sensor.enabled_by_default, Some(enabled_by_default));
     }
 
@@ -654,10 +657,14 @@ mod test {
         let button = container.buttons.iter().find(|b| b.name == name).unwrap();
         assert_eq!(button.unique_id.as_deref(), Some(unique_id));
         assert_eq!(button.object_id.as_deref(), Some(object_id));
+
+        let expected_entity_id = format!("button.{}", object_id);
         assert_eq!(
-        button.default_entity_id.as_deref(),
-        Some(format!("button.{}", object_id).as_str())
-    );
+            button.default_entity_id.as_deref(),
+            Some(expected_entity_id.as_str())
+        );
+
         assert_eq!(button.enabled_by_default, Some(enabled_by_default));
     }
+
 }
