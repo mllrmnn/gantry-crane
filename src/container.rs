@@ -188,7 +188,11 @@ impl Container {
         }
 
         let cpu = (cpu_delta / system_delta) * 100.0 * num_cpus as f64;
-        if cpu.is_finite() { cpu } else { 0.0 }
+        if cpu.is_finite() {
+            cpu
+        } else {
+            0.0
+        }
     }
 
     fn parse_mem(&mut self, stats: &Stats) {
